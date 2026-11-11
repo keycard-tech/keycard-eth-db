@@ -1,0 +1,4 @@
+Sources fetched: 2026-11-11T17:54:45Z
+ERC20 token list source: https://tokens.uniswap.org/
+Chain list source: https://chainid.network/chains.json
+ABI list source: https://github.com/keycard-tech/eth-abi-repo/releases/latest/download/abi.json

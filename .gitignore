@@ -1,0 +1,12 @@
+__pycache__/
+.venv/
+.pytest_cache/
+.mypy_cache/
+# uv
+uv.lock
+# build output
+db.bin
+db-*.bin
+db-*.zip
+db-key.txt
+db-*-sha256.txt

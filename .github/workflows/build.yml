@@ -1,0 +1,146 @@
+name: Build Database
+
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: 'Database version (YYYYMMDD)'
+        required: true
+  release:
+    types: [published]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      release: ${{ steps.vars.outputs.release }}
+      version: ${{ steps.vars.outputs.version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set database version
+        id: vars
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            release="${{ github.event.release.tag_name }}"
+          else
+            release="${{ github.event.inputs.release }}"
+          fi
+          version="${release#v}"
+          if ! echo "${version}" | grep -Eq '^[0-9]{8}$'; then
+            echo "::error::'${release}' is not a database version (YYYYMMDD)"
+            exit 1
+          fi
+          echo "release=${release}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zip
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Setup Python virtual environment
+        run: |
+          uv venv
+          uv sync
+
+      # Built twice with two different keys: anything that depends on the key belongs to the
+      # signature, everything else has to come out of the committed source lists alone.
+      - name: Build with a random signing key
+        run: |
+          openssl rand -hex 32 > db-key.txt
+          uv run python tools/shell-db.py -t erc20.json -c chain.json -a abi.json \
+            -v "${{ steps.vars.outputs.version }}" -s db-key.txt -o db-1.bin
+
+      - name: Build again with another random signing key
+        run: |
+          openssl rand -hex 32 > db-key.txt
+          uv run python tools/shell-db.py -t erc20.json -c chain.json -a abi.json \
+            -v "${{ steps.vars.outputs.version }}" -s db-key.txt -o db-2.bin
+
+      - name: Check the build is reproducible
+        run: |
+          set -e
+          cmp <(head -c -64 db-1.bin) <(head -c -64 db-2.bin)
+          if cmp -s db-1.bin db-2.bin; then
+            echo "::error::two different signing keys produced the same 64 bytes"
+            exit 1
+          fi
+          hash="$(uv run python tools/database-hash.py -b db-1.bin)"
+          if [ "${hash}" != "$(uv run python tools/database-hash.py -b db-2.bin)" ]; then
+            echo "::error::the two builds hash differently"
+            exit 1
+          fi
+          cp db-1.bin db.bin
+          echo "database-hash=${hash}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Package the reproduction database
+        run: |
+          zip "db-${{ steps.vars.outputs.version }}-reproduction.zip" db.bin erc20.json chain.json abi.json manifest.txt
+
+      - name: Generate checksums
+        run: |
+          set -e
+          db_zip="db-${{ steps.vars.outputs.version }}-reproduction.zip"
+          body_hash="$(uv run python tools/database-hash.py -b db.bin)"
+          zip_hash="$(sha256sum "${db_zip}" | cut -d' ' -f1)"
+          {
+            echo "# Format: <sha256>  <filename>"
+            echo "#"
+            echo "# The database hash is computed by tools/database-hash.py, which hashes every"
+            echo "# byte except the last 64 (the signature), so a plain sha256sum of db.bin does"
+            echo "# NOT reproduce it. Verify it with:"
+            echo "#   python3 tools/database-hash.py -b db.bin"
+            echo "#"
+            echo "# The zip hash is a plain SHA256 of the packaged asset as uploaded, and is what"
+            echo "# 'sha256sum -c --ignore-missing <this file>' verifies. Only db.bin is"
+            echo "# reproducible across runs, since the zip itself carries file timestamps."
+            echo "#"
+            echo "# Built with a throwaway key. The production database is signed offline and"
+            echo "# shares this hash, since the hash excludes the signature."
+            echo "${body_hash}  db.bin"
+            echo "${zip_hash}  ${db_zip}"
+          } > "db-${{ steps.vars.outputs.release }}-sha256.txt"
+
+      - name: Upload reproduction artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: db-${{ steps.vars.outputs.release }}-reproduction
+          path: db-${{ steps.vars.outputs.version }}-reproduction.zip
+
+      - name: Upload hash artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: db-${{ steps.vars.outputs.release }}-sha256
+          path: db-${{ steps.vars.outputs.release }}-sha256.txt
+
+  # The reproduction database and the checksums are attached automatically. The production
+  # database is signed with the release key and uploaded by hand.
+  release:
+    needs: build
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download reproduction artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: db-${{ needs.build.outputs.release }}-reproduction
+          path: assets
+
+      - name: Download hash artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: db-${{ needs.build.outputs.release }}-sha256
+          path: assets
+
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ needs.build.outputs.release }}" assets/* --repo "${{ github.repository }}" --clobber
