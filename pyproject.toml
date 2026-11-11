@@ -6,8 +6,6 @@ requires-python = ">=3.10"
 dependencies = [
     "secp256k1Crypto>=0.0.1",
     "eth-utils>=5.3.0",
-    # Nothing imports Crypto directly: eth-utils has no keccak of its own and picks pycryptodome
-    # up at runtime. Without it eth_utils.keccak raises ImportError inside abi.py.
     "pycryptodome>=3.22.0",
-    "keycard>=0.3.0",
+    "keycard>=0.4.0",
 ]
