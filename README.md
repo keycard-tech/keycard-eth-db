@@ -24,8 +24,7 @@ trailing 64 bytes.
 
 ## Reproducing a published version
 
-The lists behind every release are at https://shell.keycard.tech/update/db-version-history . Unzip
-the version you want and rebuild it with `-d`:
+Unzip the version you want and rebuild it with `-d`:
 
     uv run python tools/shell-db.py -t erc20.json -c chain.json -a abi.json -v 20251127 -d -o db-out.bin
     uv run python tools/database-hash.py -b db-out.bin
